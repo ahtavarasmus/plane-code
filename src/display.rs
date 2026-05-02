@@ -324,6 +324,28 @@ impl Display {
         );
         println!();
     }
+
+    /// One-liner showing the current directory and git branch. Wired
+    /// up by the caller when it wants a "where am I" cue in the
+    /// banner area. Unused for now; safe to remove if no caller picks
+    /// it up.
+    pub fn show_status_line(&self) {
+        if !self.verbose {
+            return;
+        }
+        let current_dir = std::env::current_dir().unwrap_or_default();
+        let dir_name = current_dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let branch = git2::Repository::open(&current_dir)
+            .ok()
+            .and_then(|repo| repo.head().ok().map(|h| h.shorthand().unwrap_or("?").to_string()))
+            .unwrap_or_else(|| "?".to_string());
+        let line = format!("  {} · {} · status", dir_name, branch);
+        println!("{}", line.bright_black().italic());
+    }
 }
 
 fn section_header(label: &str, glyph: &str, color: &str) {
@@ -437,23 +459,16 @@ impl StreamPrinter {
     }
 
     fn emit_thinking(&mut self, text: &str) {
-        // Dim italic gray. We re-style per character chunk so newlines
-        // get the indent treatment without baking ANSI codes into
-        // partial-line state.
-        let mut chunk = String::new();
+        // Same styling as content - no dim color. Section header
+        // (`• thinking` in magenta) is enough to distinguish, the
+        // body should be readable.
         for ch in text.chars() {
             if ch == '\n' {
-                if !chunk.is_empty() {
-                    print!("{}", chunk.bright_black().italic());
-                    chunk.clear();
-                }
                 print!("\n  ");
             } else {
-                chunk.push(ch);
+                print!("{ch}");
             }
-        }
-        if !chunk.is_empty() {
-            print!("{}", chunk.bright_black().italic());
         }
     }
 }
+

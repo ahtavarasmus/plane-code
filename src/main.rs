@@ -18,6 +18,7 @@ mod ollama;
 mod ontology;
 mod sessions;
 mod tools;
+mod tui;
 
 const DEFAULT_NUM_CTX: u32 = 32768;
 const DEFAULT_OLLAMA_MODEL: &str = "qwen3:8b";
@@ -57,7 +58,7 @@ struct Cli {
     api_key: Option<String>,
 
     /// Maximum agent turns (tool-call rounds) before bailing
-    #[arg(long, default_value_t = 12)]
+    #[arg(long, default_value_t = 30)]
     max_turns: usize,
 
     /// Ollama context window (num_ctx). Larger values let longer
@@ -77,6 +78,13 @@ struct Cli {
     /// the first prompt of a session pays a ~10-15s weight-load cost.
     #[arg(long, default_value_t = false)]
     no_warm: bool,
+
+    /// Opt in to the experimental full-screen TUI (pinned input box,
+    /// status line, scrollback). Off by default - the rustyline-based
+    /// REPL is currently more reliable. Re-enable once the TUI's
+    /// scroll math + render perf are settled.
+    #[arg(long, default_value_t = false)]
+    tui: bool,
 
     /// Print every raw Ollama stream chunk to stderr. Use when the model
     /// generates eval tokens but you don't see content / thinking /
@@ -149,8 +157,6 @@ async fn main() -> Result<()> {
         .with_context(|| format!("workspace path {:?} not found", cli.workspace))?;
     let prompt = cli.prompt.join(" ");
 
-    // Indexer banner goes to stderr so any --flow / debug stdout output
-    // stays cleanly pipeable.
     eprintln!("indexing {} ...", workspace.display());
     let mut ontology = ontology::Ontology::index(&workspace)?;
     eprintln!(
@@ -180,12 +186,6 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Seed the compile-error baseline ONCE so the agent's edits can be
-    // classified as "introduced by this edit" vs "pre-existing in the
-    // workspace." Done eagerly here (not lazily on first edit) because
-    // the first edit needs the pre-edit state to compare against. Cost
-    // is one cargo check at startup; skipped for non-editing modes
-    // (--flow / --debug) above.
     {
         eprintln!("baselining workspace compile state ...");
         use std::collections::HashSet;
@@ -209,9 +209,7 @@ async fn main() -> Result<()> {
     };
 
     // Layered defaults: saved user config overrides built-ins, explicit
-    // CLI flags override the saved config. provider+model are paired -
-    // overriding only the provider on the CLI also resets the model to
-    // that provider's default (unless --model is also given).
+    // CLI flags override the saved config.
     let saved = config::load().unwrap_or_default();
     let provider = if provider_explicit {
         cli.provider
@@ -221,14 +219,11 @@ async fn main() -> Result<()> {
     let initial_model = if let Some(m) = cli.model.clone() {
         m
     } else if !provider_explicit {
-        // No --provider, no --model: full pair from config (or defaults).
         saved.model.unwrap_or_else(|| match provider {
             Provider::Ollama => DEFAULT_OLLAMA_MODEL.to_string(),
             Provider::Groq => DEFAULT_GROQ_MODEL.to_string(),
         })
     } else {
-        // CLI specified provider but not model: don't carry the
-        // saved model across providers, fall back to that provider's default.
         match provider {
             Provider::Ollama => DEFAULT_OLLAMA_MODEL.to_string(),
             Provider::Groq => DEFAULT_GROQ_MODEL.to_string(),
@@ -245,11 +240,8 @@ async fn main() -> Result<()> {
         saved.trace.unwrap_or(cli.trace)
     };
     let llm = backend_config.build(provider, initial_model, think, trace)?;
-    eprintln!(
-        "backend: {} model={}",
-        llm.provider(),
-        llm.model()
-    );
+    eprintln!("backend: {} model={}", llm.provider(), llm.model());
+
     let mut session = agent::Agent::new(
         workspace,
         ontology,
@@ -260,10 +252,15 @@ async fn main() -> Result<()> {
     );
 
     if prompt.trim().is_empty() {
-        // No prompt given: enter REPL.
-        cli::run_repl(&mut session, !cli.no_warm).await
+        // Default to the rustyline-based REPL. TUI is experimental
+        // and opt-in via --tui until its scroll/render polish is done.
+        let is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
+        if cli.tui && is_tty {
+            tui::run_tui(&mut session, !cli.no_warm).await
+        } else {
+            cli::run_repl(&mut session, !cli.no_warm).await
+        }
     } else {
-        // Single-shot mode.
         if !cli.no_warm {
             warm_up(&session).await;
         }

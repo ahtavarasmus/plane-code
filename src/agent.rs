@@ -12,7 +12,6 @@
 
 use crate::cargo_ops::{run_cargo, RunCargoRequest};
 use crate::display::Display;
-use crate::keys::spawn_esc_watcher;
 use crate::llm::{BackendConfig, LlmBackend};
 use crate::ollama::{ChatMessage, ToolCall};
 use crate::ontology::{Ontology, QueryRequest, UpdateRequest};
@@ -38,6 +37,15 @@ pub struct Agent {
     /// `~/.plane-code/sessions/<workspace-hash>/<id>.json`. Regenerated
     /// on `/clear`; replaced on `/resume` to load into an existing file.
     pub session_id: String,
+    /// Set by the UI when the operator presses Esc / Ctrl-C while the
+    /// agent is streaming. The chat_stream select polls this flag and
+    /// cancels the in-flight request when it flips. Also doubles as a
+    /// "stop early" signal for any future long-running tool dispatch.
+    pub interrupt: Arc<AtomicBool>,
+    /// Coarse busy flag: true while a `run_turn` is in flight. The TUI
+    /// reads this to decide whether to draw the input box as editable
+    /// or as a "(busy)" placeholder.
+    pub busy: Arc<AtomicBool>,
 }
 
 impl Agent {
@@ -67,7 +75,17 @@ impl Agent {
             messages,
             display,
             session_id: sessions::new_session_id(),
+            interrupt: Arc::new(AtomicBool::new(false)),
+            busy: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.busy.load(Ordering::Relaxed)
+    }
+
+    pub fn set_busy(&self, v: bool) {
+        self.busy.store(v, Ordering::Relaxed);
     }
 
     /// Reset the conversation while preserving the system prompt and the
@@ -186,16 +204,13 @@ impl Agent {
             // streaming closure can borrow it across await points without
             // tripping the borrow checker.
             //
-            // While the stream is in flight, a sibling task watches stdin
-            // in raw mode for Esc. Either future winning the race cancels
-            // the other: stream done -> watcher exits via `cancel`; Esc
-            // pressed -> we drop the stream future, which closes the
-            // underlying reqwest connection and aborts the request.
+            // The TUI thread owns the keyboard; when the operator hits
+            // Esc / Ctrl-C, it flips `self.interrupt`. We poll that flag
+            // alongside the stream future. No raw-mode dance here -
+            // the TUI handles all terminal state.
             let printer = RefCell::new(self.display.stream_printer());
             let started = std::time::Instant::now();
-            let cancel = Arc::new(AtomicBool::new(false));
-            let (esc_tx, esc_rx) = tokio::sync::oneshot::channel::<()>();
-            spawn_esc_watcher(cancel.clone(), esc_tx);
+            let interrupt = self.interrupt.clone();
 
             enum Outcome {
                 Done(Result<crate::ollama::ChatResponse>),
@@ -206,11 +221,9 @@ impl Agent {
                 res = self.llm.chat_stream(&self.messages, &tool_defs, |kind, delta| {
                     printer.borrow_mut().feed(kind, delta);
                 }) => {
-                    cancel.store(true, Ordering::Relaxed);
                     Outcome::Done(res)
                 }
-                _ = esc_rx => {
-                    cancel.store(true, Ordering::Relaxed);
+                _ = wait_for_interrupt(interrupt.clone()) => {
                     Outcome::Esc
                 }
             };
@@ -486,6 +499,18 @@ impl Agent {
                 "error": serde_json::Value::String(format!("unknown tool: {other}"))
             }),
         }
+    }
+}
+
+/// Async helper: poll the shared interrupt flag every 50ms, return
+/// when it flips. Used inside the chat_stream select so the TUI's
+/// Esc handler can cancel an in-flight LLM request.
+async fn wait_for_interrupt(flag: Arc<AtomicBool>) {
+    loop {
+        if flag.load(Ordering::Relaxed) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
 

@@ -114,7 +114,14 @@ pub async fn run_repl(agent: &mut Agent, warm: bool) -> Result<()> {
     }
 }
 
-enum SlashOutcome {
+/// TUI-mode entry point for slash commands. Same logic as the
+/// rustyline path; just exposed so `tui.rs` can call into it without
+/// needing rustyline's run_repl stack.
+pub async fn handle_slash_for_tui(agent: &mut Agent, cmd: &str) -> SlashOutcome {
+    handle_slash(agent, cmd).await
+}
+
+pub enum SlashOutcome {
     Continue,
     Quit,
 }
