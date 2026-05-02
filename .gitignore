@@ -1,0 +1,8 @@
+# Rust build output
+/target
+
+# /export dumps written to cwd
+/planecode-session-*.json
+
+# macOS
+.DS_Store
