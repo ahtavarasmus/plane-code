@@ -159,6 +159,54 @@ async fn main() -> Result<()> {
         .with_context(|| format!("workspace path {:?} not found", cli.workspace))?;
     let prompt = cli.prompt.join(" ");
 
+    // No Cargo.toml? Auto-scaffold a binary crate via `cargo init` so
+    // the agent has something to operate on. Only fires when the
+    // directory is empty (ignoring dotfiles) - we don't want to drop
+    // Cargo.toml + src/main.rs into a non-Rust project the user opened
+    // by accident. In the non-empty case we just warn and proceed; the
+    // agent will see an empty ontology and the user can decide what to
+    // do (probably point us at a Rust workspace instead).
+    if !workspace.join("Cargo.toml").exists() {
+        if dir_is_effectively_empty(&workspace) {
+            // cargo init derives the package name from the directory
+            // basename, but cargo enforces XID-strict naming (no dots,
+            // no leading digit). Sanitize and pass --name so a path
+            // like /tmp/tmp.HXdccsDyeu still produces a valid crate.
+            let pkg_name = sanitize_pkg_name(
+                workspace
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("app"),
+            );
+            eprintln!(
+                "no Cargo.toml in {}; scaffolding binary crate `{pkg_name}` with `cargo init`...",
+                workspace.display()
+            );
+            let status = std::process::Command::new("cargo")
+                .arg("init")
+                .arg("--bin")
+                .arg("--name")
+                .arg(&pkg_name)
+                .arg("--quiet")
+                .current_dir(&workspace)
+                .status()
+                .context("failed to invoke `cargo init`")?;
+            if !status.success() {
+                anyhow::bail!(
+                    "`cargo init` failed with status {status}; aborting before indexing"
+                );
+            }
+            eprintln!("scaffolded: Cargo.toml + src/main.rs");
+        } else {
+            eprintln!(
+                "warning: {} has no Cargo.toml and is not empty; the agent will start \
+                 with an empty ontology and `cargo` verification will fail until you \
+                 add a manifest.",
+                workspace.display()
+            );
+        }
+    }
+
     eprintln!("indexing {} ...", workspace.display());
     let mut ontology = ontology::Ontology::index(&workspace)?;
     eprintln!(
@@ -268,6 +316,50 @@ async fn main() -> Result<()> {
         }
         session.run_once(&prompt).await
     }
+}
+
+/// Coerce an arbitrary directory basename into a cargo-valid package
+/// name. Cargo requires Unicode XID-ish names: letters, digits, `_`,
+/// `-`. Any other character becomes `_`. A leading digit gets prefixed
+/// with `_` so the result is also a valid Rust identifier (cargo
+/// accepts more, but identifiers travel further). Empty input falls
+/// back to "app".
+fn sanitize_pkg_name(s: &str) -> String {
+    let mut out: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if out.is_empty() {
+        return "app".into();
+    }
+    if out.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        out.insert(0, '_');
+    }
+    out
+}
+
+/// True when `dir` contains no visible entries. Dotfiles (`.git`,
+/// `.envrc`, etc.) are ignored so a freshly cloned empty repo still
+/// counts as empty and gets the scaffold treatment.
+fn dir_is_effectively_empty(dir: &std::path::Path) -> bool {
+    let iter = match std::fs::read_dir(dir) {
+        Ok(it) => it,
+        Err(_) => return false,
+    };
+    for entry in iter.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with('.') {
+            return false;
+        }
+    }
+    true
 }
 
 fn run_flow(ontology: &ontology::Ontology, target: &str) -> Result<()> {
