@@ -10,6 +10,34 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+/// Largest stdout/stderr slice we'll hand back through the tool
+/// surface. Past this the model's attention starts pattern-matching
+/// the noise instead of the user's question, which has produced
+/// repetition-collapse on full `cargo check` NDJSON dumps (~200 KB).
+const MAX_STREAM_BYTES: usize = 8 * 1024;
+const MAX_STDERR_BYTES: usize = 4 * 1024;
+
+/// Truncate `s` to at most `limit` bytes at a char boundary, appending
+/// a marker that tells the model bytes were dropped. Head-truncation:
+/// keeps the start, which is what matters for `cargo run` (program
+/// output) and the per-test pass/fail lines in `cargo test`.
+fn cap(s: String, limit: usize) -> String {
+    if s.len() <= limit {
+        return s;
+    }
+    let mut cutoff = limit;
+    while cutoff > 0 && !s.is_char_boundary(cutoff) {
+        cutoff -= 1;
+    }
+    let dropped = s.len() - cutoff;
+    let mut out = s[..cutoff].to_string();
+    out.push_str(&format!(
+        "\n[truncated: {dropped} of {} bytes omitted]",
+        s.len()
+    ));
+    out
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunCargoRequest {
     /// One of: check | build | run | test
@@ -74,11 +102,19 @@ fn run_compile(workspace: &Path, sub: &str, extra_args: &[String]) -> RunCargoRe
             "Verification clean. Safe to finalize your response to the user.".into(),
         );
     }
+    // Drop the raw cargo NDJSON stdout: with
+    // --message-format=json-diagnostic-rendered-ansi it's one JSON line
+    // per compiler-artifact / build-script-executed / fresh marker for
+    // every dependency, easily 200 KB on a clean workspace. The agent
+    // only needs `compile_errors` (already parsed above) and the
+    // `hints` line. Passing the raw stream back has crashed sessions:
+    // the model attends to the noise and falls into a repetition loop
+    // emitting `{"reason":...}` fragments instead of replying.
     RunCargoResponse {
         command: sub.into(),
         exit_code: output.status.code().unwrap_or(-1),
-        stdout,
-        stderr,
+        stdout: String::new(),
+        stderr: cap(stderr, MAX_STDERR_BYTES),
         compile_errors,
         test_results: None,
         hints,
@@ -124,8 +160,8 @@ fn run_run(workspace: &Path, extra_args: &[String], stdin: Option<&str>) -> RunC
     RunCargoResponse {
         command: "run".into(),
         exit_code,
-        stdout,
-        stderr,
+        stdout: cap(stdout, MAX_STREAM_BYTES),
+        stderr: cap(stderr, MAX_STDERR_BYTES),
         compile_errors: vec![],
         test_results: None,
         hints,
@@ -173,11 +209,15 @@ fn run_test(workspace: &Path, extra_args: &[String]) -> RunCargoResponse {
             "Verification clean. Safe to finalize your response to the user.".into(),
         );
     }
+    // test_results captures the structured pass/fail summary, so the
+    // raw stdout is only useful for inspecting a specific failure's
+    // panic text. Cap it so a large project's per-test "ok" lines
+    // (thousands of them) can't dominate the response.
     RunCargoResponse {
         command: "test".into(),
         exit_code,
-        stdout,
-        stderr,
+        stdout: cap(stdout, MAX_STREAM_BYTES),
+        stderr: cap(stderr, MAX_STDERR_BYTES),
         compile_errors: vec![],
         test_results: Some(test_results),
         hints,
@@ -269,6 +309,37 @@ fn parse_test_summary(stdout: &str, stderr: &str) -> serde_json::Value {
         "ignored": ignored,
         "failures": failures,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cap_passes_through_short_strings() {
+        assert_eq!(cap("hi".into(), 10), "hi");
+        assert_eq!(cap("".into(), 10), "");
+    }
+
+    #[test]
+    fn cap_truncates_long_strings_with_marker() {
+        let s = "x".repeat(20);
+        let out = cap(s, 8);
+        assert!(out.starts_with("xxxxxxxx"));
+        assert!(out.contains("truncated"));
+        assert!(out.contains("12 of 20"));
+    }
+
+    #[test]
+    fn cap_respects_utf8_char_boundary() {
+        // "héllo": h=1, é=2 bytes (0xc3 0xa9), then "llo" 3 bytes. Total 6.
+        // Capping at 2 would split é; cap() should pull back to 1.
+        let s = "héllo".to_string();
+        let out = cap(s, 2);
+        assert!(out.starts_with("h"));
+        assert!(!out.starts_with("h\u{00e9}")); // é didn't fit
+        assert!(out.contains("truncated"));
+    }
 }
 
 fn exec_fail(command: &str, msg: String) -> RunCargoResponse {
