@@ -2,7 +2,13 @@
 name = "planecode"
 version = "0.1.0" # EDIT: version exposed via CLI and display
 edition = "2021"
-description = "Ontology-based Rust coding agent. v0 first draft."
+description = "Ontology-based Rust coding agent. Indexes a workspace into a structural graph and drives an LLM through query/edit/verify loops."
+authors = ["Rasmus Ahtava <rasmus@ahtava.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ahtavarasmus/plane-code"
+readme = "README.md"
+keywords = ["llm", "agent", "rust", "coding", "ontology"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "plane-code"
