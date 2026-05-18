@@ -1,6 +1,6 @@
 [package]
 name = "planecode"
-version = "0.1.2" # EDIT: version exposed via CLI and display
+version = "0.1.3" # EDIT: version exposed via CLI and display
 edition = "2021"
 description = "Ontology-based Rust coding agent. Indexes a workspace into a structural graph and drives an LLM through query/edit/verify loops."
 authors = ["Rasmus Ahtava <rasmus@ahtava.com>"]
