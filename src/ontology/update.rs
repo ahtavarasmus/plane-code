@@ -100,6 +100,13 @@ impl UpdateResponse {
                  cascade impact."
                     .to_string(),
             ),
+            "unread_target" => Some(
+                "Edit refused by the read-before-edit gate: the entity or \
+                 file has not been queried this session. Call query_ontology \
+                 against it first; the body or contents in the response are \
+                 what unblock the edit."
+                    .to_string(),
+            ),
             _ => None,
         };
         Self {

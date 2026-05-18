@@ -16,6 +16,7 @@ mod keys;
 mod llm;
 mod ollama;
 mod ontology;
+mod read_set;
 mod sessions;
 mod tools;
 mod tui;

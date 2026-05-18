@@ -398,19 +398,19 @@ impl Drop for StdoutCapture {
     }
 }
 
-/// Redirect stdout (fd 1) into a pipe and spawn a reader that splits
-/// incoming bytes by newlines and forwards each line to `ui_tx`.
+/// Redirect stdout (fd 1) into a pipe and spawn a reader that ships
+/// incoming bytes (newlines and all) to `ui_tx` as they arrive.
 /// Returns:
-///   - a `File` opened on a *separate* dup of the original stdout fd
-///     - hand this to ratatui's CrosstermBackend so its drawing goes
-///     to the real terminal, not the pipe.
+///   - a `File` opened on a separate dup of the original stdout fd -
+///     hand this to ratatui's CrosstermBackend so its drawing reaches
+///     the real terminal, not the pipe.
 ///   - a `StdoutCapture` guard that restores fd 1 on drop, so the
 ///     shell sees a normal terminal when plane-code exits.
 ///
-/// Crucial ordering: `EnterAlternateScreen` and `enable_raw_mode`
-/// MUST happen AFTER this returns, because we want them applied to
-/// the saved-real-stdout fd that ratatui draws on, not to the pipe
-/// fd that's now masquerading as fd 1.
+/// Crucial ordering: `EnterAlternateScreen` and `enable_raw_mode` must
+/// happen AFTER this returns, because we want them applied to the
+/// saved-real-stdout fd that ratatui draws on, not to the pipe fd
+/// that's now masquerading as fd 1.
 fn capture_stdout(
     ui_tx: mpsc::UnboundedSender<UiOut>,
 ) -> Result<(std::fs::File, StdoutCapture)> {
@@ -475,9 +475,6 @@ fn capture_stdout(
                     Ok(0) => break,
                     Ok(n) => {
                         leftover.extend_from_slice(&buf[..n]);
-                        // Find the last byte position that completes
-                        // a UTF-8 character. Anything past it stays
-                        // in leftover for the next read.
                         let valid_up_to = match std::str::from_utf8(&leftover) {
                             Ok(_) => leftover.len(),
                             Err(e) => e.valid_up_to(),

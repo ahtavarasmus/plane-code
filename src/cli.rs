@@ -30,6 +30,7 @@ use std::path::PathBuf;
 /// needs.
 const MODEL_OPTIONS: &[(Provider, &str)] = &[
     (Provider::Groq, "qwen/qwen3-32b"),
+    (Provider::Ollama, "qwen3.6:27b"),
     (Provider::Ollama, "qwen3:32b"),
     (Provider::Ollama, "qwen3:8b"),
 ];

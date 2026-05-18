@@ -15,6 +15,7 @@ use crate::display::Display;
 use crate::llm::{BackendConfig, LlmBackend};
 use crate::ollama::{ChatMessage, ToolCall};
 use crate::ontology::{Ontology, QueryRequest, UpdateRequest};
+use crate::read_set::ReadSet;
 use crate::sessions;
 use crate::tools;
 use anyhow::Result;
@@ -46,6 +47,12 @@ pub struct Agent {
     /// reads this to decide whether to draw the input box as editable
     /// or as a "(busy)" placeholder.
     pub busy: Arc<AtomicBool>,
+    /// Read-before-edit guardrail. Tracks which entities (Function/Type/
+    /// Trait keys) and which files the agent has actually read in this
+    /// session. update_ontology consults it before dispatching - edits
+    /// against unread targets are bounced with a hint pointing at the
+    /// query call to make first.
+    pub read_set: ReadSet,
 }
 
 impl Agent {
@@ -77,6 +84,7 @@ impl Agent {
             session_id: sessions::new_session_id(),
             interrupt: Arc::new(AtomicBool::new(false)),
             busy: Arc::new(AtomicBool::new(false)),
+            read_set: ReadSet::new(),
         }
     }
 
@@ -99,6 +107,7 @@ impl Agent {
             self.messages.push(s);
         }
         self.session_id = sessions::new_session_id();
+        self.read_set.clear();
     }
 
     /// Replace the current conversation with the contents of a saved
@@ -108,6 +117,7 @@ impl Agent {
     /// model sees the same context it had before).
     pub fn resume_session(&mut self, session_id: String, messages: Vec<ChatMessage>) {
         self.session_id = session_id;
+        self.read_set.rebuild_from_history(&messages);
         self.messages = messages;
     }
 
@@ -435,7 +445,11 @@ impl Agent {
                     }
                 };
                 match self.ontology.query(&req) {
-                    Ok(resp) => serde_json::to_value(resp).unwrap_or(serde_json::Value::Null),
+                    Ok(resp) => {
+                        let val = serde_json::to_value(resp).unwrap_or(serde_json::Value::Null);
+                        self.read_set.record_query(&val);
+                        val
+                    }
                     Err(e) => serde_json::json!({ "error": e.to_string() }),
                 }
             }
@@ -448,8 +462,29 @@ impl Agent {
                         });
                     }
                 };
+                // Read-before-edit guardrail. If the model is trying to
+                // mutate an entity or file it hasn't actually read this
+                // session, refuse the call and point it at the right
+                // query_ontology call. Without this, small models tend
+                // to edit code from imagination - inventing APIs and
+                // symbols that don't exist.
+                if let Some(reason) = self.read_set.check_update(&req.operation, &req.target) {
+                    return serde_json::json!({
+                        "success": false,
+                        "rollback_reason": "unread_target",
+                        "files_changed": [],
+                        "compile_status": null,
+                        "graph_diff": null,
+                        "details": reason.clone(),
+                        "hints": [reason],
+                    });
+                }
                 match self.ontology.update(&req) {
-                    Ok(resp) => serde_json::to_value(resp).unwrap_or(serde_json::Value::Null),
+                    Ok(resp) => {
+                        let val = serde_json::to_value(resp).unwrap_or(serde_json::Value::Null);
+                        self.read_set.record_update(&req.operation, &req.target, &val);
+                        val
+                    }
                     Err(e) => serde_json::json!({ "error": e.to_string() }),
                 }
             }

@@ -196,6 +196,15 @@ fn update_ontology_def(ont: &Ontology) -> Value {
                 "ACTION phase. Make the edit. Pick the operation by what \
                  you're changing:\n\
                  \n\
+                 READ-BEFORE-EDIT: the harness blocks any update against an \
+                 entity or file you haven't actually read this session. \
+                 'Read' means you called query_ontology with object_type= \
+                 Function/Type/Trait/File and got the body or content back. \
+                 Module-level queries (which only return signatures) and \
+                 include_links neighbors do NOT count. After a successful \
+                 update, the target stays 'read' (the diff in the response \
+                 covers it), so chained edits don't need re-reads.\n\
+                 \n\
                  - replace_body  : function body only; signature, attrs, \
                                    doc unchanged.\n\
                  - replace_item  : whole item (attrs + doc + signature + \
@@ -460,6 +469,14 @@ matches `{crate_name}::auth`).
 Stay scoped: only edit what the user asked for. Pre-existing errors in
 files you didn't touch are TODOs to mention, not problems to chase.
 Empty responses are catastrophic - if uncertain, write a paragraph.
+
+Read before you edit. The harness refuses update_ontology calls against
+entities or files you haven't actually queried this session - this is
+to keep you from editing code from imagination. Before any edit, call
+query_ontology with object_type=Function/Type/Trait/File to load the
+real body or contents into your context. Module queries do NOT count
+as reads; they only show signatures. The body the model needs lives in
+Function/Type/Trait results.
 "#
     )
 }
