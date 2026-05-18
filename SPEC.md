@@ -2,7 +2,7 @@
 
 A code ontology + tool surface for AI coding agents working on Rust codebases.
 
-The agent has only two tools: `query_ontology` and `update_ontology`. No grep,
+The agent has only two tools: `query_codebase` and `update_codebase`. No grep,
 no Read, no file listing. Everything goes through the graph.
 
 ## Scope
@@ -35,7 +35,7 @@ sentence + signature) embedded with a small local model (e.g. all-MiniLM-L6
 or similar). Hybrid retrieval: cosine similarity + BM25 lexical overlap +
 small centrality boost from caller count.
 
-## Tool 1: query_ontology
+## Tool 1: query_codebase
 
 ```
 Description: Query the Rust code ontology. Covers functions, types, traits,
@@ -148,7 +148,7 @@ Type:
 
 Trait, Module: analogous shapes.
 
-## Tool 2: update_ontology
+## Tool 2: update_codebase
 
 ```
 Description: Apply a structural edit to the Rust workspace. Edits are

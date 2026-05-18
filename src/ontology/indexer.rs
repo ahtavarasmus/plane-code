@@ -383,7 +383,7 @@ fn build_method(m: &syn::ImplItemFn, path: &Path, module: &str) -> Function {
 /// First source line owned by a structural item, *including* leading
 /// attributes and doc comments. The full presentation - decorators, docs,
 /// signature, body - all belong to the structural unit. Edits to any of
-/// them go through update_ontology (replace_body for body-only,
+/// them go through update_codebase (replace_body for body-only,
 /// replace_item for whole rewrites). edit_file cannot touch them, which
 /// is what enforces graph-first navigation: to see or change a function's
 /// docs/attrs/body, the agent must query Function and use a structural op.

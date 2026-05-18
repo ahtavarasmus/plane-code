@@ -198,7 +198,7 @@ fn run_test(workspace: &Path, extra_args: &[String]) -> RunCargoResponse {
         if failed > 0 {
             hints.push(format!(
                 "{failed} test(s) failed. Inspect `failures` for the names; \
-                 query the failing test by name via query_ontology to see body."
+                 query the failing test by name via query_codebase to see body."
             ));
         } else {
             tests_passed = true;

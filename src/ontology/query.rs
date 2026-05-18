@@ -1,4 +1,4 @@
-//! Query operations on the ontology. Implements the `query_ontology` tool.
+//! Query operations on the ontology. Implements the `query_codebase` tool.
 //!
 //! v0 ranking is hybrid lexical: substring on name, module_path, signature,
 //! and doc, weighted by field. No embeddings yet. Replace `score_*` once
@@ -16,7 +16,7 @@ use std::collections::HashMap;
 ///   - `indexed` entries carry only `signature` (and owner key); body and
 ///     attribute/doc text are NOT exposed here. To read or edit those,
 ///     the agent must query the structural entity (Function/Type/Trait)
-///     and use the matching update_ontology op.
+///     and use the matching update_codebase op.
 /// This is what enforces graph-first navigation: File responses tell the
 /// agent which structural items live where, but cannot be used as a
 /// shortcut to read whole-file source.

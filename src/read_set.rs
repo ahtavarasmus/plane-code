@@ -2,9 +2,9 @@
 //!
 //! Tracks which structural entities (Function/Type/Trait keys) and which
 //! files the agent has actually seen the contents of in this session.
-//! `update_ontology` consults this set before dispatching: if the model
+//! `update_codebase` consults this set before dispatching: if the model
 //! tries to edit something it never read, the harness rolls the call back
-//! with a hint pointing at the exact `query_ontology` call to make.
+//! with a hint pointing at the exact `query_codebase` call to make.
 //!
 //! The motivation is the recurring failure mode where a small model picks
 //! a target out of a module listing (signatures only) and writes a "fix"
@@ -12,15 +12,15 @@
 //! the model's context and dramatically reduces hallucinated APIs.
 //!
 //! What counts as a read:
-//!   - `query_ontology object_type=Function|Type|Trait` results - they
+//!   - `query_codebase object_type=Function|Type|Trait` results - they
 //!     return body / source verbatim.
-//!   - `query_ontology object_type=File` results - return the file
+//!   - `query_codebase object_type=File` results - return the file
 //!     outline plus gap region content.
-//!   - `query_ontology object_type=Module` does NOT count - it shows
+//!   - `query_codebase object_type=Module` does NOT count - it shows
 //!     signatures only, no bodies.
 //!   - `include_links` neighbors do NOT count - they show summaries only.
 //!
-//! After a successful update_ontology, the edit's target is freshened in
+//! After a successful update_codebase, the edit's target is freshened in
 //! the set: the response carried the diff, so the model has up-to-date
 //! information and shouldn't be forced to re-query before its next edit.
 
@@ -45,7 +45,7 @@ impl ReadSet {
         self.files.clear();
     }
 
-    /// Walk a successful query_ontology result and record any bodies it
+    /// Walk a successful query_codebase result and record any bodies it
     /// exposed. Idempotent; safe to call on partial results.
     pub fn record_query(&mut self, result: &serde_json::Value) {
         let object_type = result
@@ -76,7 +76,7 @@ impl ReadSet {
         }
     }
 
-    /// Freshen the set after a successful update_ontology. The target's
+    /// Freshen the set after a successful update_codebase. The target's
     /// new state is implicitly visible to the model via the diff in the
     /// response, so the next edit on this entity doesn't need a re-query.
     pub fn record_update(
@@ -129,7 +129,7 @@ impl ReadSet {
 
     /// Decide whether to block an update. `Some(reason)` means refuse,
     /// `None` means proceed. The reason carries a hint with the exact
-    /// query_ontology call the model should make first.
+    /// query_codebase call the model should make first.
     pub fn check_update(&self, op: &str, target: &serde_json::Value) -> Option<String> {
         match op {
             "replace_body" => {
@@ -193,8 +193,8 @@ impl ReadSet {
             };
             let tool_name = msg.tool_name.as_deref().unwrap_or("");
             match tool_name {
-                "query_ontology" => self.record_query(&result),
-                "update_ontology" => {
+                "query_codebase" => self.record_query(&result),
+                "update_codebase" => {
                     if let Some(id) = &msg.tool_call_id {
                         if let Some((_, args)) = call_args.get(id) {
                             let op = args
@@ -237,10 +237,10 @@ fn unread_entity_message(object_type: &str, mp: &str, name: &str, key: &str) -> 
          updates to entities you haven't actually seen so the model doesn't edit \
          from imagination. Bodies and definitions can change between edits, so \
          pasted snippets and recall don't count - only the body returned by a \
-         live query_ontology call does. Make this call first, then retry the \
+         live query_codebase call does. Make this call first, then retry the \
          edit:\n\
          \n\
-         query_ontology {{\"object_type\": \"{object_type}\", \"filters\": \
+         query_codebase {{\"object_type\": \"{object_type}\", \"filters\": \
          {{\"name\": \"{name}\", \"module_path\": \"{mp}\"}}}}\n\
          \n\
          The result includes the body / source - review it carefully before \
@@ -254,7 +254,7 @@ fn unread_file_message(path: &str) -> String {
          current contents are not in your context, so any edit would be blind. \
          Make this call first, then retry the edit:\n\
          \n\
-         query_ontology {{\"object_type\": \"File\", \"filters\": \
+         query_codebase {{\"object_type\": \"File\", \"filters\": \
          {{\"path\": \"{path}\"}}}}\n\
          \n\
          The result includes the file outline plus gap-region text - review \

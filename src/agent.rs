@@ -49,7 +49,7 @@ pub struct Agent {
     pub busy: Arc<AtomicBool>,
     /// Read-before-edit guardrail. Tracks which entities (Function/Type/
     /// Trait keys) and which files the agent has actually read in this
-    /// session. update_ontology consults it before dispatching - edits
+    /// session. update_codebase consults it before dispatching - edits
     /// against unread targets are bounced with a hint pointing at the
     /// query call to make first.
     pub read_set: ReadSet,
@@ -185,7 +185,7 @@ impl Agent {
             tool_call_id: None,
         });
 
-        // Verification gate: tracks whether the most recent update_ontology
+        // Verification gate: tracks whether the most recent update_codebase
         // has been followed by a run_cargo (any command) yet. The model
         // can pile up multiple edits in a row, query freely, etc., but it
         // can't emit a final text response while updates are unverified.
@@ -285,11 +285,11 @@ impl Agent {
                     self.display.show_tool_call(call);
                     let result = self.dispatch_tool(call);
                     // Update the verification flag based on which tool
-                    // ran and (for update_ontology) whether it actually
+                    // ran and (for update_codebase) whether it actually
                     // succeeded. A rolled-back update doesn't count as
                     // a pending edit.
                     match call.function.name.as_str() {
-                        "update_ontology" => {
+                        "update_codebase" => {
                             let succeeded = result
                                 .get("success")
                                 .and_then(|v| v.as_bool())
@@ -435,12 +435,12 @@ impl Agent {
 
     fn dispatch_tool(&mut self, call: &ToolCall) -> serde_json::Value {
         match call.function.name.as_str() {
-            "query_ontology" => {
+            "query_codebase" => {
                 let req: QueryRequest = match serde_json::from_value(call.function.arguments.clone()) {
                     Ok(r) => r,
                     Err(e) => {
                         return serde_json::json!({
-                            "error": format!("invalid query_ontology arguments: {e}")
+                            "error": format!("invalid query_codebase arguments: {e}")
                         });
                     }
                 };
@@ -453,19 +453,19 @@ impl Agent {
                     Err(e) => serde_json::json!({ "error": e.to_string() }),
                 }
             }
-            "update_ontology" => {
+            "update_codebase" => {
                 let req: UpdateRequest = match serde_json::from_value(call.function.arguments.clone()) {
                     Ok(r) => r,
                     Err(e) => {
                         return serde_json::json!({
-                            "error": format!("invalid update_ontology arguments: {e}")
+                            "error": format!("invalid update_codebase arguments: {e}")
                         });
                     }
                 };
                 // Read-before-edit guardrail. If the model is trying to
                 // mutate an entity or file it hasn't actually read this
                 // session, refuse the call and point it at the right
-                // query_ontology call. Without this, small models tend
+                // query_codebase call. Without this, small models tend
                 // to edit code from imagination - inventing APIs and
                 // symbols that don't exist.
                 if let Some(reason) = self.read_set.check_update(&req.operation, &req.target) {

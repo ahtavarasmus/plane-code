@@ -1,4 +1,4 @@
-//! Structural edits over the ontology. Implements the `update_ontology` tool.
+//! Structural edits over the ontology. Implements the `update_codebase` tool.
 //!
 //! Compile-check policy (mirrors SPEC.md):
 //!   - Parse failures roll back atomically (disk untouched).
@@ -73,7 +73,7 @@ impl UpdateResponse {
             ),
             "indexed_overlap" => Some(
                 "edit_file refused: the requested region overlaps a structural \
-                 ontology item. Use the appropriate update_ontology operation \
+                 ontology item. Use the appropriate update_codebase operation \
                  (replace_body / add_function / rename) for the named owner, \
                  or pick one of the gap regions reported in the response."
                     .to_string(),
@@ -96,13 +96,13 @@ impl UpdateResponse {
             ),
             "file_has_indexed_items" => Some(
                 "delete_file refused: the file contains indexed structural \
-                 items. Remove those via update_ontology first, or accept the \
+                 items. Remove those via update_codebase first, or accept the \
                  cascade impact."
                     .to_string(),
             ),
             "unread_target" => Some(
                 "Edit refused by the read-before-edit gate: the entity or \
-                 file has not been queried this session. Call query_ontology \
+                 file has not been queried this session. Call query_codebase \
                  against it first; the body or contents in the response are \
                  what unblock the edit."
                     .to_string(),
@@ -908,8 +908,8 @@ impl Ontology {
                             "suggested_op": match s.kind.as_str() {
                                 "Function" => "replace_body or rename",
                                 "Type" | "Trait" => "currently no surgical op; \
-                                    edit the surrounding gap or extend update_ontology",
-                                _ => "see update_ontology",
+                                    edit the surrounding gap or extend update_codebase",
+                                _ => "see update_codebase",
                             },
                         })
                     })

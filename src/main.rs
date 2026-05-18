@@ -309,7 +309,7 @@ fn run_debug(ontology: &mut ontology::Ontology, workspace: &std::path::Path) -> 
     }
 
     if let Some(rs_path) = files.iter().find(|p| p.ends_with("auth.rs")) {
-        println!("\n--- query_ontology File path={rs_path} (outline-only response) ---");
+        println!("\n--- query_codebase File path={rs_path} (outline-only response) ---");
         let req = QueryRequest {
             object_type: "File".into(),
             keywords: None,
@@ -341,7 +341,7 @@ fn run_debug(ontology: &mut ontology::Ontology, workspace: &std::path::Path) -> 
         }
 
         println!(
-            "\n--- update_ontology edit_file (overlap test on the doc-comment line) ---"
+            "\n--- update_codebase edit_file (overlap test on the doc-comment line) ---"
         );
         let upd = UpdateRequest {
             operation: "edit_file".into(),
@@ -362,7 +362,7 @@ fn run_debug(ontology: &mut ontology::Ontology, workspace: &std::path::Path) -> 
         );
     }
 
-    println!("\n--- query_ontology File query='verify_token' ---");
+    println!("\n--- query_codebase File query='verify_token' ---");
     let req = QueryRequest {
         object_type: "File".into(),
         keywords: Some("verify_token".into()),
@@ -398,7 +398,7 @@ fn run_debug(ontology: &mut ontology::Ontology, workspace: &std::path::Path) -> 
         }
     }
 
-    println!("\n--- update_ontology edit_file (dry-run) on Cargo.toml ---");
+    println!("\n--- update_codebase edit_file (dry-run) on Cargo.toml ---");
     let upd = UpdateRequest {
         operation: "edit_file".into(),
         target: serde_json::json!({ "path": "Cargo.toml" }),
@@ -416,7 +416,7 @@ fn run_debug(ontology: &mut ontology::Ontology, workspace: &std::path::Path) -> 
         r.files_changed.len()
     );
 
-    println!("\n--- update_ontology replace_body (dry-run) on sandbox::auth::authenticate ---");
+    println!("\n--- update_codebase replace_body (dry-run) on sandbox::auth::authenticate ---");
     let upd = UpdateRequest {
         operation: "replace_body".into(),
         target: serde_json::json!({
@@ -436,7 +436,7 @@ fn run_debug(ontology: &mut ontology::Ontology, workspace: &std::path::Path) -> 
         r.files_changed.len()
     );
 
-    println!("\n--- update_ontology replace_item (dry-run) on sandbox::auth::Token ---");
+    println!("\n--- update_codebase replace_item (dry-run) on sandbox::auth::Token ---");
     let upd = UpdateRequest {
         operation: "replace_item".into(),
         target: serde_json::json!({

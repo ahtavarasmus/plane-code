@@ -1,6 +1,6 @@
 //! Tool schemas exposed to the LLM. Three tools cover the whole surface:
-//!   - query_ontology  : reads (Function, Type, Trait, Module, File)
-//!   - update_ontology : writes (replace_body, add_function, rename, edit_file,
+//!   - query_codebase  : reads (Function, Type, Trait, Module, File)
+//!   - update_codebase : writes (replace_body, add_function, rename, edit_file,
 //!                       create_file, delete_file)
 //!   - run_cargo       : executes (check | build | run | test)
 //!
@@ -17,14 +17,14 @@ use std::collections::BTreeSet;
 /// every edit.
 pub fn tool_definitions(ont: &Ontology) -> Vec<Value> {
     vec![
-        query_ontology_def(ont),
-        update_ontology_def(ont),
+        query_codebase(ont),
+        update_codebase(ont),
         run_cargo_def(),
         show_flow_def(),
     ]
 }
 
-fn query_ontology_def(ont: &Ontology) -> Value {
+fn query_codebase(ont: &Ontology) -> Value {
     let module_paths = sorted_unique(ont.modules.keys().cloned());
     let trait_paths = sorted_unique(ont.traits.keys().cloned());
     let file_paths = sorted_unique(ont.files.keys().cloned());
@@ -70,7 +70,7 @@ fn query_ontology_def(ont: &Ontology) -> Value {
     json!({
         "type": "function",
         "function": {
-            "name": "query_ontology",
+            "name": "query_codebase",
             "description":
                 "EXPLORATION phase. The graph is your eyes - find a \
                  candidate entity by intent, then traverse the edges to \
@@ -168,7 +168,7 @@ fn query_ontology_def(ont: &Ontology) -> Value {
     })
 }
 
-fn update_ontology_def(ont: &Ontology) -> Value {
+fn update_codebase(ont: &Ontology) -> Value {
     let module_paths = sorted_unique(ont.modules.keys().cloned());
     let function_modules =
         sorted_unique(ont.functions.values().map(|f| f.module_path.clone()));
@@ -191,14 +191,14 @@ fn update_ontology_def(ont: &Ontology) -> Value {
     json!({
         "type": "function",
         "function": {
-            "name": "update_ontology",
+            "name": "update_codebase",
             "description":
                 "ACTION phase. Make the edit. Pick the operation by what \
                  you're changing:\n\
                  \n\
                  READ-BEFORE-EDIT: the harness blocks any update against an \
                  entity or file you haven't actually read this session. \
-                 'Read' means you called query_ontology with object_type= \
+                 'Read' means you called query_codebase with object_type= \
                  Function/Type/Trait/File and got the body or content back. \
                  Module-level queries (which only return signatures) and \
                  include_links neighbors do NOT count. After a successful \
@@ -314,7 +314,7 @@ fn run_cargo_def() -> Value {
         "function": {
             "name": "run_cargo",
             "description":
-                "VERIFICATION phase. Required after any update_ontology \
+                "VERIFICATION phase. Required after any update_codebase \
                  before your final response. The harness gates the loop \
                  here: if updates were made and the most recent run_cargo \
                  is older than the most recent update, your text response \
@@ -379,7 +379,7 @@ fn show_flow_def() -> Value {
                  \n\
                  (a) EXPLANATION. The operator asks how some piece of code \
                  works, what flows through a module, where a behavior \
-                 lives, or how a system is wired. Use query_ontology first \
+                 lives, or how a system is wired. Use query_codebase first \
                  to locate the right entry-point function or module by \
                  intent ('user signup' -> probably an auth handler or a \
                  service function), then show_flow on it. The diagram \
@@ -452,10 +452,10 @@ fn with_enum(mut base: Value, values: &[String], max: usize) -> Value {
 pub fn system_prompt(crate_name: &str) -> String {
     format!(
         r#"You are planecode, a Rust coding agent operating on the workspace
-crate `{crate_name}`. The loop has three phases - explore (query_ontology),
-act (update_ontology), verify (run_cargo). show_flow is the visual
+crate `{crate_name}`. The loop has three phases - explore (query_codebase),
+act (update_codebase), verify (run_cargo). show_flow is the visual
 companion: when the operator asks how some piece of code works or where
-a behavior lives, find the entry point with query_ontology and then
+a behavior lives, find the entry point with query_codebase and then
 open it with show_flow rather than reconstructing the flow in prose -
 the diagram is faster and lets them drill in themselves. Also reach
 for it after edits that reshape control flow, as a post-verify review.
@@ -470,10 +470,10 @@ Stay scoped: only edit what the user asked for. Pre-existing errors in
 files you didn't touch are TODOs to mention, not problems to chase.
 Empty responses are catastrophic - if uncertain, write a paragraph.
 
-Read before you edit. The harness refuses update_ontology calls against
+Read before you edit. The harness refuses update_codebase calls against
 entities or files you haven't actually queried this session - this is
 to keep you from editing code from imagination. Before any edit, call
-query_ontology with object_type=Function/Type/Trait/File to load the
+query_codebase with object_type=Function/Type/Trait/File to load the
 real body or contents into your context. Module queries do NOT count
 as reads; they only show signatures. The body the model needs lives in
 Function/Type/Trait results.
