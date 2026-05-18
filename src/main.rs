@@ -14,6 +14,7 @@ mod flow_cli;
 mod groq;
 mod keys;
 mod llm;
+mod models;
 mod ollama;
 mod ontology;
 mod read_set;

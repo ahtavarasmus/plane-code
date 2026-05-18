@@ -14,26 +14,16 @@
 use crate::agent::Agent;
 use crate::config;
 use crate::llm::Provider;
+use crate::models::{self, ModelInfo, ModelState};
 use crate::sessions;
 use crate::tools;
 use anyhow::{Context, Result};
 use colored::Colorize;
-use dialoguer::{theme::ColorfulTheme, Select};
+use dialoguer::{theme::ColorfulTheme, Confirm, FuzzySelect, Select};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use std::collections::HashSet;
 use std::path::PathBuf;
-
-/// Curated picker entries for `/model`. Order matches what shows up in
-/// the picker. Add a row here to expose a new model in the REPL; the
-/// rest of the system has no opinions about which models exist. The
-/// (provider, model_id) pair is exactly what `BackendConfig::build`
-/// needs.
-const MODEL_OPTIONS: &[(Provider, &str)] = &[
-    (Provider::Groq, "qwen/qwen3-32b"),
-    (Provider::Ollama, "qwen3.6:27b"),
-    (Provider::Ollama, "qwen3:32b"),
-    (Provider::Ollama, "qwen3:8b"),
-];
 
 pub async fn run_repl(agent: &mut Agent, warm: bool) -> Result<()> {
     let mut rl = DefaultEditor::new()?;
@@ -169,7 +159,7 @@ async fn handle_slash(agent: &mut Agent, cmd: &str) -> SlashOutcome {
         }
         "model" => {
             let arg = parts.next().unwrap_or("").to_string();
-            handle_model_switch(agent, &arg);
+            handle_model_switch(agent, &arg).await;
             SlashOutcome::Continue
         }
         "warm" => {
@@ -346,78 +336,266 @@ fn print_help() {
 }
 
 /// Handle `/model` with an optional model-name argument. Empty arg
-/// opens the interactive picker; non-empty tries to match an entry in
-/// MODEL_OPTIONS by exact model id and switches without prompting.
+/// opens the interactive two-step picker (provider, then model);
+/// non-empty switches the model directly using the provided string as
+/// the model id. Provider for the direct path is inferred from the id
+/// shape: `org/name` -> Groq, `name:tag` -> Ollama, else current.
+///
+/// Models are not hardcoded - both lists come from the providers'
+/// APIs at click time so new releases show up without code changes.
 ///
 /// Conversation history is preserved across the swap. think/trace
 /// settings are read off the current backend and copied onto the new
 /// one so toggling those mid-session doesn't reset.
-fn handle_model_switch(agent: &mut Agent, arg: &str) {
-    let current_provider = agent.llm.provider();
+async fn handle_model_switch(agent: &mut Agent, arg: &str) {
+    let current_provider = match agent.llm.provider() {
+        "groq" => Provider::Groq,
+        _ => Provider::Ollama,
+    };
     let current_model = agent.llm.model().to_string();
-    let current_idx = MODEL_OPTIONS.iter().position(|(p, m)| {
-        p.as_str() == current_provider && *m == current_model.as_str()
-    });
 
-    let chosen_idx = if arg.is_empty() {
-        // Interactive picker. dialoguer handles arrow-key navigation,
-        // Enter to confirm, Esc/Ctrl-C to cancel (returns Ok(None)).
-        let items: Vec<String> = MODEL_OPTIONS
-            .iter()
-            .map(|(p, m)| format!("({:<6}) {}", p.as_str(), m))
-            .collect();
-        let theme = ColorfulTheme::default();
-        let select = Select::with_theme(&theme)
-            .with_prompt("model")
-            .items(&items)
-            .default(current_idx.unwrap_or(0));
-        match select.interact_opt() {
-            Ok(Some(i)) => i,
-            Ok(None) => {
-                println!("{}", "(model unchanged)".bright_black());
-                return;
-            }
-            Err(e) => {
-                agent.display.show_error(&format!("picker: {e}"));
-                return;
-            }
+    if !arg.is_empty() {
+        switch_direct(agent, arg, current_provider, &current_model);
+        return;
+    }
+
+    // Step 1: provider picker.
+    let providers = [Provider::Ollama, Provider::Groq];
+    let provider_items = [
+        format!("{} {}", "ollama".bright_white(), "(local)".bright_black()),
+        format!("{} {}", "groq".bright_white(), "(hosted)".bright_black()),
+    ];
+    let default_provider_idx = providers
+        .iter()
+        .position(|p| *p == current_provider)
+        .unwrap_or(0);
+    let theme = ColorfulTheme::default();
+    let provider = match Select::with_theme(&theme)
+        .with_prompt("provider")
+        .items(&provider_items)
+        .default(default_provider_idx)
+        .interact_opt()
+    {
+        Ok(Some(i)) => providers[i],
+        Ok(None) => {
+            println!("{}", "(model unchanged)".bright_black());
+            return;
         }
-    } else {
-        // Exact-name match against the curated list. Bare model names
-        // are unambiguous in our list (Ollama uses `name:tag`, Groq
-        // uses `org/name`); first match wins.
-        match MODEL_OPTIONS.iter().position(|(_, m)| *m == arg) {
-            Some(i) => i,
-            None => {
-                let known: Vec<String> = MODEL_OPTIONS
-                    .iter()
-                    .map(|(p, m)| format!("{}:{}", p.as_str(), m))
-                    .collect();
-                agent.display.show_error(&format!(
-                    "unknown model: {arg}\n  known: {}",
-                    known.join(", ")
-                ));
-                return;
-            }
+        Err(e) => {
+            agent.display.show_error(&format!("picker: {e}"));
+            return;
         }
     };
 
-    let (provider, model) = MODEL_OPTIONS[chosen_idx];
-    if Some(chosen_idx) == current_idx {
+    // Step 2: fetch models for the chosen provider. Print a status line
+    // so the operator sees activity during the round-trip.
+    print!(
+        "{}",
+        format!("fetching {} models... ", provider.as_str())
+            .bright_black()
+            .italic()
+    );
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+
+    let listed = match provider {
+        Provider::Groq => fetch_groq(agent).await,
+        Provider::Ollama => fetch_ollama(agent).await,
+    };
+    let models = match listed {
+        Ok(m) => m,
+        Err(e) => {
+            println!();
+            agent.display.show_error(&e.to_string());
+            return;
+        }
+    };
+    println!("{}", "done".bright_black().italic());
+
+    if models.is_empty() {
+        agent.display.show_error("no models found for this provider");
+        return;
+    }
+
+    // Step 3: fuzzy-search picker. FuzzySelect lets the operator type
+    // to filter the list - useful when Ollama's library has 200+ entries.
+    let items: Vec<String> = models.iter().map(render_picker_row).collect();
+    let current_idx = models
+        .iter()
+        .position(|m| m.id == current_model && m.provider == current_provider);
+    let prompt_label = if provider == Provider::Ollama {
+        "model  -  type to filter, Enter on [available] for size variants"
+    } else {
+        "model  -  type to filter"
+    };
+    let chosen_idx = match FuzzySelect::with_theme(&theme)
+        .with_prompt(prompt_label)
+        .items(&items)
+        .default(current_idx.unwrap_or(0))
+        .interact_opt()
+    {
+        Ok(Some(i)) => i,
+        Ok(None) => {
+            println!("{}", "(model unchanged)".bright_black());
+            return;
+        }
+        Err(e) => {
+            agent.display.show_error(&format!("picker: {e}"));
+            return;
+        }
+    };
+    let chosen = models[chosen_idx].clone();
+
+    // Step 4: if it's an AvailableRemote Ollama slug, drill into its
+    // tag list so the user can pick a size variant before pulling.
+    // The base slug alone (e.g. `qwen3`) doesn't tell the user whether
+    // they're about to download 500MB or 140GB - the tag does.
+    let final_id = if chosen.state == ModelState::AvailableRemote {
+        match pick_ollama_tag(&chosen.id, &theme).await {
+            Some(full_id) => {
+                if let Err(e) = run_pull(agent, &full_id).await {
+                    agent.display.show_error(&format!("pull: {e}"));
+                    return;
+                }
+                full_id
+            }
+            None => return,
+        }
+    } else {
+        chosen.id.clone()
+    };
+
+    apply_switch(agent, chosen.provider, final_id);
+}
+
+/// Fetch and display tag variants for an Ollama slug, prompt the user
+/// to pick one, and return `slug:tag` ready to pull. Returns `None`
+/// when the user cancels, the network fetch fails, or the page lists
+/// no usable tags - in each case we print a message and bail back to
+/// the prompt without switching models.
+async fn pick_ollama_tag(slug: &str, theme: &ColorfulTheme) -> Option<String> {
+    print!(
+        "{}",
+        format!("fetching {slug} tags... ").bright_black().italic()
+    );
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let tags = match models::list_ollama_tags(slug).await {
+        Ok(t) => t,
+        Err(e) => {
+            println!();
+            eprintln!(
+                "  {} {}",
+                "warn:".bright_yellow(),
+                format!("tag list: {e}").bright_black()
+            );
+            // Fall back to a plain confirm on the bare slug - the daemon
+            // will pull the default tag (usually `latest`).
+            let confirm = Confirm::with_theme(theme)
+                .with_prompt(format!(
+                    "couldn't fetch tag sizes; pull {slug} (default tag)?"
+                ))
+                .default(true)
+                .interact_opt();
+            return match confirm {
+                Ok(Some(true)) => Some(slug.to_string()),
+                _ => {
+                    println!("{}", "(model unchanged)".bright_black());
+                    None
+                }
+            };
+        }
+    };
+    println!("{}", "done".bright_black().italic());
+
+    if tags.is_empty() {
+        println!(
+            "{}",
+            format!("no tags found for {slug}").bright_yellow()
+        );
+        return None;
+    }
+
+    let items: Vec<String> = tags
+        .iter()
+        .map(|t| {
+            let size = t
+                .size_bytes
+                .map(|n| format!("  ({})", models::human_size(n)))
+                .unwrap_or_else(|| "  (size unknown)".into());
+            format!("{}:{}{}", slug, t.tag, size)
+        })
+        .collect();
+    let chosen_tag_idx = match FuzzySelect::with_theme(theme)
+        .with_prompt(format!("{slug} tag (type to filter)"))
+        .items(&items)
+        .default(0)
+        .interact_opt()
+    {
+        Ok(Some(i)) => i,
+        Ok(None) => {
+            println!("{}", "(model unchanged)".bright_black());
+            return None;
+        }
+        Err(e) => {
+            eprintln!("picker: {e}");
+            return None;
+        }
+    };
+    let tag = &tags[chosen_tag_idx];
+    let full_id = format!("{}:{}", slug, tag.tag);
+    let size_hint = tag
+        .size_bytes
+        .map(|n| format!(" (~{})", models::human_size(n)))
+        .unwrap_or_default();
+    match Confirm::with_theme(theme)
+        .with_prompt(format!("pull {full_id}{size_hint}?"))
+        .default(true)
+        .interact_opt()
+    {
+        Ok(Some(true)) => Some(full_id),
+        _ => {
+            println!("{}", "(model unchanged)".bright_black());
+            None
+        }
+    }
+}
+
+/// Direct (non-interactive) switch from `/model <name>`. Provider is
+/// inferred from id shape; we trust the user and let the LLM backend
+/// surface "model not found" errors at first use rather than
+/// pre-validating against a list.
+fn switch_direct(
+    agent: &mut Agent,
+    arg: &str,
+    current_provider: Provider,
+    current_model: &str,
+) {
+    let provider = if arg.contains('/') {
+        Provider::Groq
+    } else if arg.contains(':') {
+        Provider::Ollama
+    } else {
+        current_provider
+    };
+    if provider == current_provider && arg == current_model {
         println!(
             "{} {} {}",
             "already on".bright_black(),
             provider.as_str().bright_white(),
-            model.bright_white(),
+            arg.bright_white(),
         );
         return;
     }
+    apply_switch(agent, provider, arg.to_string());
+}
 
+/// Build the new backend, swap it onto the agent, and persist the
+/// choice. Shared by interactive and direct paths so they don't drift.
+fn apply_switch(agent: &mut Agent, provider: Provider, model: String) {
     let think = agent.llm.think();
     let trace = agent.llm.trace();
     match agent
         .backend_config
-        .build(provider, model.to_string(), think, trace)
+        .build(provider, model.clone(), think, trace)
     {
         Ok(new_backend) => {
             agent.llm = new_backend;
@@ -427,20 +605,18 @@ fn handle_model_switch(agent: &mut Agent, arg: &str) {
                 provider.as_str().bright_white(),
                 model.bright_white(),
             );
-            // Persist so the next launch starts with this provider/model
-            // pair instead of falling back to the built-in default.
             if let Err(e) = config::update(|c| {
                 c.provider = Some(provider);
-                c.model = Some(model.to_string());
+                c.model = Some(model.clone());
             }) {
-                agent
-                    .display
-                    .show_error(&format!("config save: {e}"));
+                agent.display.show_error(&format!("config save: {e}"));
             }
             if matches!(provider, Provider::Ollama) {
                 println!(
                     "{}",
-                    "  (run /warm to preload weights before the next prompt)".bright_black().italic()
+                    "  (run /warm to preload weights before the next prompt)"
+                        .bright_black()
+                        .italic()
                 );
             }
         }
@@ -448,6 +624,99 @@ fn handle_model_switch(agent: &mut Agent, arg: &str) {
             agent.display.show_error(&e.to_string());
         }
     }
+}
+
+async fn fetch_groq(agent: &Agent) -> Result<Vec<ModelInfo>> {
+    let api_key = agent
+        .backend_config
+        .api_key
+        .clone()
+        .or_else(|| std::env::var("GROQ_API_KEY").ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no GROQ_API_KEY available; pass --api-key=<key> or set GROQ_API_KEY"
+            )
+        })?;
+    models::list_groq(&agent.backend_config.groq_host, &api_key).await
+}
+
+/// Fetch both the local (downloaded) and remote (registry catalogue)
+/// Ollama lists, merge, dedupe. Local entries appear first; remote
+/// entries are filtered to slugs that aren't already represented in
+/// `local` (matched by the base name before any `:tag`).
+async fn fetch_ollama(agent: &Agent) -> Result<Vec<ModelInfo>> {
+    let local = models::list_ollama_local(&agent.backend_config.ollama_host)
+        .await
+        .map_err(|e| anyhow::anyhow!("ollama daemon: {e}"))?;
+    // Best-effort: a failed library scrape shouldn't block the picker.
+    let remote = match models::list_ollama_remote().await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!(
+                "  {} {}",
+                "warn:".bright_yellow(),
+                format!("ollama.com library: {e}").bright_black()
+            );
+            Vec::new()
+        }
+    };
+    let downloaded_bases: HashSet<String> = local
+        .iter()
+        .map(|m| m.id.split(':').next().unwrap_or(&m.id).to_string())
+        .collect();
+    let mut combined = local;
+    for r in remote {
+        if !downloaded_bases.contains(&r.id) {
+            combined.push(r);
+        }
+    }
+    Ok(combined)
+}
+
+/// Plain text — no ANSI escapes. dialoguer's FuzzySelect applies its
+/// own highlight to the cursor row by wrapping the item string in
+/// styling escapes; if the item already contains `\x1b[...m` codes
+/// (from `colored`), the highlight terminator lands mid-sequence and
+/// the row prints raw `[92m...[0m` text on the selected line. Padding
+/// the badge to a fixed width keeps the model column aligned without
+/// needing color.
+fn render_picker_row(m: &ModelInfo) -> String {
+    let badge = match m.state {
+        ModelState::Downloaded => "[downloaded]",
+        ModelState::AvailableRemote => "[available] ",
+        ModelState::Hosted => "[hosted]    ",
+    };
+    let size = m
+        .size_bytes
+        .map(|n| format!("  ({})", models::human_size(n)))
+        .unwrap_or_default();
+    format!("{badge} {}{size}", m.id)
+}
+
+/// Pull a model from the Ollama registry, painting per-line progress
+/// over a single terminal line. The daemon emits many status updates
+/// (one per layer + verifying + success); we use `\r` to overwrite
+/// so the operator sees a live indicator instead of a wall of text.
+async fn run_pull(agent: &Agent, name: &str) -> Result<()> {
+    use std::io::Write;
+    println!(
+        "{}",
+        format!("pulling {name}...").bright_black().italic()
+    );
+    let host = agent.backend_config.ollama_host.clone();
+    let res = models::pull_ollama(&host, name, |status| {
+        // Pad to clear any trailing characters from the previous,
+        // longer status line. 64 chars covers any realistic message.
+        print!("\r  {:<64}", status.bright_black());
+        let _ = std::io::stdout().flush();
+    })
+    .await;
+    // Newline so the next prompt doesn't share a line with the last
+    // progress chunk.
+    println!();
+    res
 }
 
 /// `/resume`: list saved sessions for this workspace, let the operator

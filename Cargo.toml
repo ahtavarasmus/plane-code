@@ -20,7 +20,7 @@ clap = { version = "4.5", features = ["derive"] }
 ansi-to-tui = "7"
 colored = "2"
 crossterm = "0.27"
-dialoguer = "0.11"
+dialoguer = { version = "0.11", features = ["fuzzy-select"] }
 git2 = "0.13"
 libc = "0.2"
 ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
