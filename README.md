@@ -13,6 +13,12 @@ the model and into the harness, so the model gets exact code to operate
 on instead of a search problem. Smaller models become tractable.
 Coding gets cheaper.
 
+
+
+https://github.com/user-attachments/assets/bee7e7cb-1a41-4c86-ba46-3ad7d8c55c85
+
+
+
 The package on crates.io is `planecode`. The installed binary is
 `plane-code`.
 
