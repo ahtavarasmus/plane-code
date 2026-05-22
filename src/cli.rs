@@ -559,33 +559,44 @@ async fn pick_ollama_tag(slug: &str, theme: &ColorfulTheme) -> Option<String> {
     }
 }
 
-/// Direct (non-interactive) switch from `/model <name>`. Provider is
-/// inferred from id shape; we trust the user and let the LLM backend
-/// surface "model not found" errors at first use rather than
-/// pre-validating against a list.
+/// Direct (non-interactive) switch from `/model <name>`. Accepts an
+/// optional `groq/` or `ollama/` prefix to switch providers in one
+/// command (e.g. `/model groq/llama-3.3-70b-versatile`); without a
+/// prefix the current provider is kept. Shape-based inference (looking
+/// for `:` or `/` in the id) is unreliable because Groq names sometimes
+/// contain `/` (e.g. HuggingFace-style ids) and Ollama tag separators
+/// alone don't identify the backend, so the previous version misrouted
+/// valid ids in both directions.
 fn switch_direct(
     agent: &mut Agent,
     arg: &str,
     current_provider: Provider,
     current_model: &str,
 ) {
-    let provider = if arg.contains('/') {
-        Provider::Groq
-    } else if arg.contains(':') {
-        Provider::Ollama
+    let (provider, model) = if let Some(rest) = arg.strip_prefix("groq/") {
+        (Provider::Groq, rest.to_string())
+    } else if let Some(rest) = arg.strip_prefix("ollama/") {
+        (Provider::Ollama, rest.to_string())
     } else {
-        current_provider
+        (current_provider, arg.to_string())
     };
-    if provider == current_provider && arg == current_model {
+    if model.is_empty() {
+        println!(
+            "{}",
+            "(no model id after provider prefix)".bright_black()
+        );
+        return;
+    }
+    if provider == current_provider && model == current_model {
         println!(
             "{} {} {}",
             "already on".bright_black(),
             provider.as_str().bright_white(),
-            arg.bright_white(),
+            model.bright_white(),
         );
         return;
     }
-    apply_switch(agent, provider, arg.to_string());
+    apply_switch(agent, provider, model);
 }
 
 /// Build the new backend, swap it onto the agent, and persist the
@@ -643,9 +654,11 @@ async fn fetch_groq(agent: &Agent) -> Result<Vec<ModelInfo>> {
 }
 
 /// Fetch both the local (downloaded) and remote (registry catalogue)
-/// Ollama lists, merge, dedupe. Local entries appear first; remote
-/// entries are filtered to slugs that aren't already represented in
-/// `local` (matched by the base name before any `:tag`).
+/// Ollama lists, merge, dedupe. Local entries appear first, then remote
+/// entries. Dedup is by exact id only: local entries carry a full
+/// `name:tag`, remote entries carry the family slug (`qwen3`), so the
+/// family row stays visible even after one of its tags is downloaded,
+/// which is how the user pulls a second size of the same family.
 async fn fetch_ollama(agent: &Agent) -> Result<Vec<ModelInfo>> {
     let local = models::list_ollama_local(&agent.backend_config.ollama_host)
         .await
@@ -662,13 +675,10 @@ async fn fetch_ollama(agent: &Agent) -> Result<Vec<ModelInfo>> {
             Vec::new()
         }
     };
-    let downloaded_bases: HashSet<String> = local
-        .iter()
-        .map(|m| m.id.split(':').next().unwrap_or(&m.id).to_string())
-        .collect();
+    let local_ids: HashSet<String> = local.iter().map(|m| m.id.clone()).collect();
     let mut combined = local;
     for r in remote {
-        if !downloaded_bases.contains(&r.id) {
+        if !local_ids.contains(&r.id) {
             combined.push(r);
         }
     }

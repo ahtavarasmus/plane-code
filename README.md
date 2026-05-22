@@ -1,4 +1,5 @@
-# plane-code
+![Plane Code Icon](plane-code-icon.png)
+
 
 A Rust coding agent designed to be useful with local models. The name
 is literal: planecode is built so smaller, cheaper, even fully offline
