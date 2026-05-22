@@ -1,4 +1,5 @@
-![Plane Code Icon](plane-code-icon.png)
+<img src="plane-code-icon.png" width="25%" alt="Plane Code Icon">
+
 
 
 A Rust coding agent designed to be useful with local models. The name
